@@ -9,7 +9,8 @@ import os
 import json
 import re
 import base64
-import subprocess
+import urllib.request
+import urllib.error
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -21,6 +22,8 @@ import anthropic
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 PLAYLIST_ID     = os.environ.get("PLAYLIST_ID", "PL-7ziKOnwNCshaIEzDNgGttU7ms2Bcbo3")
 ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
+GH_TOKEN        = os.environ["GH_TOKEN"]
+GH_REPO         = "fourestbox-creator/Learner"
 OUTPUT_DIR      = Path("output")
 PROCESSED_FILE  = Path("processed.json")
 
@@ -225,19 +228,48 @@ def analyze_video(client: anthropic.Anthropic, video: dict, transcript: str | No
     return json.loads(raw)
 
 
-# ── Git helpers ───────────────────────────────────────────────────────────────
+# ── GitHub API push ───────────────────────────────────────────────────────────
+
+def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
+    url = f"https://api.github.com/repos/{GH_REPO}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept":        "application/vnd.github+json",
+        "Content-Type":  "application/json",
+    }
+    req = urllib.request.Request(url, headers=headers, method=method)
+    if data:
+        req.data = json.dumps(data).encode()
+    try:
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read())
+
+
+def github_upload(local_path: Path, repo_path: str, commit_msg: str):
+    with open(local_path, "rb") as f:
+        content_b64 = base64.b64encode(f.read()).decode()
+    existing = _gh_api("GET", repo_path)
+    sha = existing.get("sha")
+    payload: dict = {"message": commit_msg, "content": content_b64}
+    if sha:
+        payload["sha"] = sha
+    result = _gh_api("PUT", repo_path, payload)
+    if "content" in result:
+        print(f"  Uploaded: {repo_path}")
+    else:
+        print(f"  Upload FAILED {repo_path}: {result.get('message', result)}")
+
 
 def git_commit_push(new_files: list[Path]):
     if not new_files:
         return
-    subprocess.run(["git", "config", "user.email", "cine-bot@analysis.local"], check=True)
-    subprocess.run(["git", "config", "user.name",  "CineAnalyzer Bot"],         check=True)
+    msg = f"feat: add {len(new_files)} cinematography analysis JSON(s)"
     for f in new_files:
-        subprocess.run(["git", "add", str(f)], check=True)
-    subprocess.run(["git", "add", str(PROCESSED_FILE)], check=True)
-    subprocess.run(["git", "commit", "-m", f"feat: add {len(new_files)} cinematography analysis JSON(s)"], check=True)
-    subprocess.run(["git", "push"], check=True)
-    print(f"Committed and pushed {len(new_files)} file(s).")
+        github_upload(f, str(f), msg)
+    github_upload(PROCESSED_FILE, str(PROCESSED_FILE), msg)
+    print(f"Pushed {len(new_files)} file(s) via GitHub API.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
