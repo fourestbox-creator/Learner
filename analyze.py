@@ -12,11 +12,22 @@ import base64
 import urllib.request
 import urllib.error
 import requests
+import httplib2
 from pathlib import Path
 from datetime import datetime
 from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi
 import anthropic
+
+# Ensure googleapiclient/httplib2 uses the system CA bundle (needed when the
+# environment's egress proxy presents a self-signed certificate chain).
+_SYSTEM_CA_BUNDLE = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+
+
+def _make_http():
+    if _SYSTEM_CA_BUNDLE and os.path.exists(_SYSTEM_CA_BUNDLE):
+        return httplib2.Http(ca_certs=_SYSTEM_CA_BUNDLE, timeout=60)
+    return httplib2.Http(timeout=60)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -280,7 +291,7 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=_make_http())
     client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
