@@ -11,6 +11,7 @@ import re
 import base64
 import urllib.request
 import urllib.error
+import urllib.parse
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -121,6 +122,11 @@ def build_analysis_prompt(video: dict, transcript: str | None) -> str:
     xscript    = (transcript or "")[:4000] or "No transcript available."
     ts_now     = datetime.utcnow().isoformat() + "Z"
 
+    # Pre-escape so embedding in JSON template is safe (handles " \ newlines etc.)
+    title_json    = json.dumps(video['title'])
+    video_id_json = json.dumps(video['video_id'])
+    ts_now_json   = json.dumps(ts_now)
+
     return f"""
 Analyze the following YouTube video from a senior cinematographer's perspective.
 
@@ -136,12 +142,13 @@ Description: {desc_snip}
 {xscript}
 
 --- TASK ---
-Return ONLY valid JSON in exactly this structure (no markdown fences, no extra keys):
+Return ONLY valid JSON in exactly this structure (no markdown fences, no extra keys).
+Every string must be properly JSON-escaped. Do not include trailing commas.
 
 {{
-  "video_id": "{video['video_id']}",
-  "title": "{video['title']}",
-  "analyzed_at": "{ts_now}",
+  "video_id": {video_id_json},
+  "title": {title_json},
+  "analyzed_at": {ts_now_json},
   "cinematography": {{
     "dominant_shot_types": ["<list of shot types seen/inferred>"],
     "camera_angles": ["<list of angles>"],
@@ -212,7 +219,7 @@ def analyze_video(client: anthropic.Anthropic, video: dict, transcript: str | No
 
     response = client.messages.create(
         model="claude-opus-4-6",
-        max_tokens=4096,
+        max_tokens=8192,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}]
     )
@@ -231,7 +238,9 @@ def analyze_video(client: anthropic.Anthropic, video: dict, transcript: str | No
 # ── GitHub API push ───────────────────────────────────────────────────────────
 
 def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
-    url = f"https://api.github.com/repos/{GH_REPO}/contents/{path}"
+    # Percent-encode each path segment so non-ASCII filenames are valid in the URL
+    safe_path = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
+    url = f"https://api.github.com/repos/{GH_REPO}/contents/{safe_path}"
     headers = {
         "Authorization": f"Bearer {GH_TOKEN}",
         "Accept":        "application/vnd.github+json",
