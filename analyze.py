@@ -9,14 +9,19 @@ import os
 import json
 import re
 import base64
+import ssl
 import urllib.request
 import urllib.error
+import httplib2
 import requests
 from pathlib import Path
 from datetime import datetime
 from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi
 import anthropic
+
+# Honor system CA bundle (self-signed cert in sandbox chain)
+_CA_BUNDLE = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -280,7 +285,8 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    http_obj = httplib2.Http(ca_certs=_CA_BUNDLE) if _CA_BUNDLE else None
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=http_obj)
     client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
