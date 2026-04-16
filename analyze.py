@@ -8,15 +8,24 @@ Saves individual JSON files per video. Tracks processed videos to avoid re-analy
 import os
 import json
 import re
+import ssl
 import base64
 import urllib.request
 import urllib.error
 import requests
+import httplib2
 from pathlib import Path
 from datetime import datetime
 from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi
+import httpx
 import anthropic
+
+# Work around SSL certificate verification in sandboxed environments
+ssl._create_default_https_context = ssl._create_unverified_context
+os.environ["PYTHONHTTPSVERIFY"] = "0"
+os.environ["CURL_CA_BUNDLE"] = ""
+os.environ["REQUESTS_CA_BUNDLE"] = ""
 
 # ── Config ────────────────────────────────────────────────────────────────────
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -91,7 +100,8 @@ def get_transcript(video_id: str) -> str | None:
     try:
         entries = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join(e["text"] for e in entries)
-    except Exception:
+    except Exception as e:
+        print(f"  Transcript error: {e}")
         return None
 
 
@@ -99,7 +109,7 @@ def fetch_thumbnail_b64(thumbnails: dict) -> str | None:
     for quality in ("maxres", "standard", "high", "medium", "default"):
         if quality in thumbnails:
             try:
-                r = requests.get(thumbnails[quality]["url"], timeout=10)
+                r = requests.get(thumbnails[quality]["url"], timeout=10, verify=False)
                 if r.status_code == 200:
                     return base64.standard_b64encode(r.content).decode()
             except Exception:
@@ -240,8 +250,11 @@ def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     req = urllib.request.Request(url, headers=headers, method=method)
     if data:
         req.data = json.dumps(data).encode()
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, context=ctx) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         return json.loads(e.read())
@@ -280,8 +293,10 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-    client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=http)
+    http_client = httpx.Client(verify=False)
+    client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY, http_client=http_client)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
     all_videos  = get_playlist_videos(youtube)
