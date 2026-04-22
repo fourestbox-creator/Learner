@@ -12,6 +12,9 @@ import base64
 import urllib.request
 import urllib.error
 import requests
+import ssl
+import certifi
+import httplib2
 from pathlib import Path
 from datetime import datetime
 from googleapiclient.discovery import build
@@ -230,6 +233,10 @@ def analyze_video(client: anthropic.Anthropic, video: dict, transcript: str | No
 
 # ── GitHub API push ───────────────────────────────────────────────────────────
 
+def _make_ssl_context():
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    return ctx
+
 def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     url = f"https://api.github.com/repos/{GH_REPO}/contents/{path}"
     headers = {
@@ -240,8 +247,9 @@ def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     req = urllib.request.Request(url, headers=headers, method=method)
     if data:
         req.data = json.dumps(data).encode()
+    ctx = _make_ssl_context()
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, context=ctx) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         return json.loads(e.read())
@@ -280,7 +288,8 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=http)
     client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
