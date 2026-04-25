@@ -8,9 +8,11 @@ Saves individual JSON files per video. Tracks processed videos to avoid re-analy
 import os
 import json
 import re
+import ssl
 import base64
 import urllib.request
 import urllib.error
+import httplib2
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -26,6 +28,10 @@ GH_TOKEN        = os.environ["GH_TOKEN"]
 GH_REPO         = "fourestbox-creator/Learner"
 OUTPUT_DIR      = Path("output")
 PROCESSED_FILE  = Path("processed.json")
+
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
 
 SYSTEM_PROMPT = """You are a senior cinematographer with 25+ years of experience across feature films,
 documentaries, music videos, and commercial work. You have a trained eye for visual storytelling,
@@ -241,7 +247,7 @@ def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     if data:
         req.data = json.dumps(data).encode()
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, context=ssl_context) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         return json.loads(e.read())
@@ -280,7 +286,8 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=http)
     client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
