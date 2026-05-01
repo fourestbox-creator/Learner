@@ -8,9 +8,12 @@ Saves individual JSON files per video. Tracks processed videos to avoid re-analy
 import os
 import json
 import re
+import ssl
 import base64
 import urllib.request
 import urllib.error
+import certifi
+import httplib2
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -99,7 +102,7 @@ def fetch_thumbnail_b64(thumbnails: dict) -> str | None:
     for quality in ("maxres", "standard", "high", "medium", "default"):
         if quality in thumbnails:
             try:
-                r = requests.get(thumbnails[quality]["url"], timeout=10)
+                r = requests.get(thumbnails[quality]["url"], timeout=10, verify=certifi.where())
                 if r.status_code == 200:
                     return base64.standard_b64encode(r.content).decode()
             except Exception:
@@ -230,6 +233,11 @@ def analyze_video(client: anthropic.Anthropic, video: dict, transcript: str | No
 
 # ── GitHub API push ───────────────────────────────────────────────────────────
 
+def _ssl_context():
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    return ctx
+
+
 def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     url = f"https://api.github.com/repos/{GH_REPO}/contents/{path}"
     headers = {
@@ -241,7 +249,7 @@ def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     if data:
         req.data = json.dumps(data).encode()
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, context=_ssl_context()) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         return json.loads(e.read())
@@ -280,7 +288,10 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    os.environ["SSL_CERT_FILE"] = certifi.where()
+    os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=http)
     client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
