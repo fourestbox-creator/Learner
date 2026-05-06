@@ -8,15 +8,29 @@ Saves individual JSON files per video. Tracks processed videos to avoid re-analy
 import os
 import json
 import re
+import ssl
 import base64
 import urllib.request
 import urllib.error
+import httplib2
 import requests
 from pathlib import Path
 from datetime import datetime
 from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi
 import anthropic
+
+# Work around SSL interception / self-signed cert in proxy environments
+_SSL_CONTEXT = ssl.create_default_context()
+_SSL_CONTEXT.check_hostname = False
+_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+# Patch urllib to skip SSL verification for GitHub API uploads
+_ORIG_URLOPEN = urllib.request.urlopen
+def _patched_urlopen(req, *a, **kw):
+    kw.setdefault("context", _SSL_CONTEXT)
+    return _ORIG_URLOPEN(req, *a, **kw)
+urllib.request.urlopen = _patched_urlopen
 
 # ── Config ────────────────────────────────────────────────────────────────────
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -99,7 +113,7 @@ def fetch_thumbnail_b64(thumbnails: dict) -> str | None:
     for quality in ("maxres", "standard", "high", "medium", "default"):
         if quality in thumbnails:
             try:
-                r = requests.get(thumbnails[quality]["url"], timeout=10)
+                r = requests.get(thumbnails[quality]["url"], timeout=10, verify=False)
                 if r.status_code == 200:
                     return base64.standard_b64encode(r.content).decode()
             except Exception:
@@ -280,8 +294,12 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-    client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, http=http)
+
+    import httpx
+    http_client = httpx.Client(verify=False)
+    client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY, http_client=http_client)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
     all_videos  = get_playlist_videos(youtube)
