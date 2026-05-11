@@ -14,7 +14,6 @@ import urllib.error
 import requests
 from pathlib import Path
 from datetime import datetime
-from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi
 import anthropic
 
@@ -48,15 +47,25 @@ def save_processed(data: dict):
     PROCESSED_FILE.write_text(json.dumps(data, indent=2))
 
 
-def get_playlist_videos(youtube) -> list[dict]:
-    videos, request = [], youtube.playlistItems().list(
-        part="snippet,contentDetails",
-        playlistId=PLAYLIST_ID,
-        maxResults=50
-    )
-    while request:
-        response = request.execute()
-        for item in response.get("items", []):
+YT_API_BASE = "https://www.googleapis.com/youtube/v3"
+
+
+def get_playlist_videos() -> list[dict]:
+    videos = []
+    page_token = None
+    while True:
+        params = {
+            "part": "snippet,contentDetails",
+            "playlistId": PLAYLIST_ID,
+            "maxResults": 50,
+            "key": YOUTUBE_API_KEY,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        resp = requests.get(f"{YT_API_BASE}/playlistItems", params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get("items", []):
             snippet  = item["snippet"]
             video_id = item["contentDetails"]["videoId"]
             if snippet["title"] == "Deleted video":
@@ -68,18 +77,24 @@ def get_playlist_videos(youtube) -> list[dict]:
                 "published_at": snippet.get("publishedAt", ""),
                 "thumbnails":  snippet.get("thumbnails", {}),
             })
-        request = youtube.playlistItems().list_next(request, response)
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
     return videos
 
 
-def enrich_video(youtube, video: dict) -> dict:
-    resp = youtube.videos().list(
-        part="snippet,contentDetails,statistics",
-        id=video["video_id"]
-    ).execute()
-    if not resp["items"]:
+def enrich_video(video: dict) -> dict:
+    params = {
+        "part": "snippet,contentDetails,statistics",
+        "id": video["video_id"],
+        "key": YOUTUBE_API_KEY,
+    }
+    resp = requests.get(f"{YT_API_BASE}/videos", params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("items"):
         return video
-    item = resp["items"][0]
+    item = data["items"][0]
     video["duration"]   = item["contentDetails"].get("duration", "")
     video["tags"]       = item["snippet"].get("tags", [])
     video["thumbnails"] = item["snippet"].get("thumbnails", video["thumbnails"])
@@ -235,16 +250,9 @@ def _gh_api(method: str, path: str, data: dict | None = None) -> dict:
     headers = {
         "Authorization": f"Bearer {GH_TOKEN}",
         "Accept":        "application/vnd.github+json",
-        "Content-Type":  "application/json",
     }
-    req = urllib.request.Request(url, headers=headers, method=method)
-    if data:
-        req.data = json.dumps(data).encode()
-    try:
-        with urllib.request.urlopen(req) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return json.loads(e.read())
+    resp = requests.request(method, url, headers=headers, json=data, timeout=30)
+    return resp.json()
 
 
 def github_upload(local_path: Path, repo_path: str, commit_msg: str):
@@ -280,11 +288,10 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     processed = load_processed()
 
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
     client  = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     print(f"Fetching playlist: {PLAYLIST_ID}")
-    all_videos  = get_playlist_videos(youtube)
+    all_videos  = get_playlist_videos()
     new_videos  = [v for v in all_videos if v["video_id"] not in processed]
 
     print(f"Total: {len(all_videos)} | Already processed: {len(all_videos) - len(new_videos)} | New: {len(new_videos)}")
@@ -300,7 +307,7 @@ def main():
         print(f"\n→ Analyzing: {video['title']} ({video_id})")
 
         try:
-            video        = enrich_video(youtube, video)
+            video        = enrich_video(video)
             transcript   = get_transcript(video_id)
             thumb_b64    = fetch_thumbnail_b64(video.get("thumbnails", {}))
 
