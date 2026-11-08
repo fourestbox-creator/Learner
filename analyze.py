@@ -89,8 +89,9 @@ def enrich_video(youtube, video: dict) -> dict:
 
 def get_transcript(video_id: str) -> str | None:
     try:
-        entries = YouTubeTranscriptApi.get_transcript(video_id)
-        return " ".join(e["text"] for e in entries)
+        ytt = YouTubeTranscriptApi()
+        transcript = ytt.fetch(video_id)
+        return " ".join(snippet.text for snippet in transcript)
     except Exception:
         return None
 
